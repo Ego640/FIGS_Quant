@@ -1,15 +1,18 @@
 #include<iostream>
 #include<vector>
 #include<string>
-#include<string.h>
+#include<cstring>
 #include<algorithm>
 #include<fstream>
 #include<numeric>
-#include<math.h>
+#include<cassert>
+#include<cmath>
+#include<opencv2/opencv.hpp>
 #include<algorithm>
 using namespace std;
-#define MIN -1000000
-vector<bool> IsThereEnoughData;//后期可能需要修改
+using namespace cv;
+#define MIN_NUM -1000000
+//vector<bool> IsThereEnoughData;//后期可能需要修改
 struct item{
     double Coeff;
     int Scan;
@@ -22,7 +25,7 @@ struct item{
 struct partOfItem{
     string Sequence;
     int Charge;
-    bool operator==(const struct partOfItem& p1){
+    bool operator==(const struct partOfItem& p1) const{
         return (Sequence==p1.Sequence&&Charge==p1.Charge);
     }
 };
@@ -32,7 +35,7 @@ struct partOfItem1{
     double Coeff;
     double PrecursorMZ;
     double Correlation;
-    bool operator==(const struct partOfItem1& p1){
+    bool operator==(const struct partOfItem1& p1) const{
         return (RetentionTime==p1.RetentionTime);
     }
 };
@@ -41,7 +44,7 @@ struct partOfItem2{
     double RetentionTime;
     double Coeff;
     double PrecursorMZ;
-    bool operator==(const struct partOfItem2& p2){
+    bool operator==(const struct partOfItem2& p2) const{
         return (RetentionTime==p2.RetentionTime);
     }
 };
@@ -56,13 +59,53 @@ struct partOfHeader{
     double retentionTime;
     double Coeff;
 };
-
+struct Quants{
+    string Sequence;
+    int Charge;
+    double Quantity;
+    double LBPval;
+    double SNR;
+    double MaxCoeffTime;
+    double MaxCoeff;
+    double PeakWidth;
+    double LBPvalOnUniformGrid;
+    double PeakVariance;
+    double PeakSkewness;
+    double PeakKutosis;
+    double PeakStart;
+    double PeakEnd;
+    double Correlation;
+    bool isTypeDecoy=false;
+};
+struct resQuants{
+    string Sequence;
+    int Charge;
+    bool isTypeDecoy;
+    double score;
+    double Quantity;
+    double PeakStart;
+    double PeakEnd;
+};
 struct peak{
     double maxValue;
     int left;
     int top;
     int right;
 };
+
+vector<struct headItem> h;
+vector<struct item> results;
+vector<struct item> resultsWithDecoys;
+vector<struct Quants> quants;
+vector<struct Quants> quantsWithDecoys;
+vector<struct resQuants> D;
+//vector<bool> isTypeDecoy;
+double irisdata[100000][4];
+vector<int> Type;
+vector<double> fdr;
+vector<string> pasteSequenceCharge;
+vector<double> quantsScore;
+
 bool cmppeak(struct peak p1,struct peak p2){
     return p1.maxValue>p2.maxValue;
 }
@@ -72,10 +115,10 @@ bool cmp(struct item i1,struct item i2){//Scan,Sequence,Charge
         return true;
     }
     else if(i1.Scan==i2.Scan){
-        if(i1.Sequence<i2.Sequence){
+        if(i1.Sequence.compare(i2.Sequence)==-1){
             return true;
         }
-        else if(i1.Sequence==i2.Sequence){
+        else if(i1.Sequence.compare(i2.Sequence)==0){
             if(i1.Charge<i2.Charge){
                 return true;
             }
@@ -90,6 +133,98 @@ bool cmp(struct item i1,struct item i2){//Scan,Sequence,Charge
     else{
         return false;
     }
+}
+void allmomemt(vector<double> &PeakCentralMoments,vector<double> in){
+    double exp=0;
+    for(int i=0;i<in.size();i++){
+        exp+=in[i];
+    }
+    exp/=(1.0*in.size());//期望
+    //计算第2矩
+    double var=0;
+    for(int i=0;i<in.size();i++){
+        var+=(in[i]-exp)*(in[i]-exp);
+    }
+    var/=(1.0*in.size());
+    //计算第3矩
+    double skew=0;
+    for(int i=0;i<in.size();i++){
+        skew+=pow((in[i]-exp),3);
+    }
+    skew/=(1.0*in.size());
+    //计算第4矩
+    double kurt=0;
+    for(int i=0;i<in.size();i++){
+        kurt+=pow((in[i]-exp),4);
+    }
+    kurt/=(1.0*in.size());
+    PeakCentralMoments[0]=var;
+    PeakCentralMoments[1]=skew;
+    PeakCentralMoments[2]=kurt;
+}
+void kz(vector<double> &x,int m,int k){//x是待滤波的数组，m为核的大小，k为迭代次数
+    vector<double> kztemp(x.size());
+    for(int i=0;i<k;i++){
+        for(int j=0;j<x.size();j++){
+            double posi_val=0;
+            if(j<(m-1)/2){
+                for(int r=0;r<=j+(m-1)/2;r++){
+                    posi_val+=x[r];
+                }
+                posi_val/=(j+(m-1)/2+1);
+                kztemp[j]=posi_val;
+            }
+            else if(j+(m-1)/2>=x.size()){
+                for(int r=j-(m-1)/2;r<x.size();r++){
+                    posi_val+=x[r];
+                }
+                posi_val/=(x.size()-j+(m-1)/2);
+                kztemp[j]=posi_val;
+            }
+            else{
+                for(int r=j-(m-1)/2;r<=j+(m-1)/2;r++){
+                    posi_val+=x[r];
+                }
+                posi_val/=m;
+                kztemp[j]=posi_val;
+            }
+        }
+        for(int j=0;j<x.size();j++){
+            x[j]=kztemp[j];
+        }
+    }
+}
+double boxtest(vector<double> x,string dirPath){
+    //写输入文件
+    ofstream outFile;
+    string inFilePath=dirPath+"/in.csv";
+    string RFilePath=dirPath+"/test.R";
+    outFile.open(inFilePath,ios::out);
+    for(int i=0;i<x.size();i++){
+        outFile<<to_string(x[i])<<endl;
+    }
+    outFile.close();
+    //system函数运行R脚本
+    string cmdstr="Rscript "+RFilePath+" "+dirPath;
+    system(cmdstr.c_str());
+    //读取r脚本运行结果
+    string outFilePath=dirPath+"/res.txt";
+    ifstream infile;
+    infile.open(outFilePath.data());
+    assert(infile.is_open());
+    string s;
+    getline(infile,s);
+    double p=stod(s);
+    //判断in.csv和res.txt文件是否存在，若存在，删除两个文件
+    ifstream fin(inFilePath.c_str());
+    if(fin.good()){
+        remove(inFilePath.c_str());
+    }
+    ifstream fres(outFilePath.c_str());
+    if(fres.good()){
+        remove(outFilePath.c_str());
+    }
+    return p;
 }
 double trapz(vector<double> x,vector<double> y){//求积分，梯形法
     double res=0;
@@ -108,7 +243,7 @@ double sd(vector<double> a){//求标准差函数
     double stdev=sqrt(accum/a.size());
     return stdev;
 }
-double scale(vector<double> &a){//标准化
+void scale(vector<double> &a){//标准化
     double stdev=sd(a);
     for(int i=0;i<a.size();i++){
         a[i]/=stdev;
@@ -165,14 +300,14 @@ void findPeaks(vector<double> d,vector<struct peak> &f,int leftstep,int rightste
         f.erase(f.begin()+j-1);
     }
 }
-void SparkCoeffs(string rawCoeffsFilePath,vector<struct item> DIA_RefSpectraCoeffs){
+void SparkCoeffs(string rawCoeffsFilePath,vector<struct item>& DIA_RefSpectraCoeffs){
     ifstream _csvInput(rawCoeffsFilePath);
     string _Oneline;//用于存每一行的string
     vector<string> eachRow;
     const char* split=",";//分隔符
     char* p;
     //将每一行读出来的数据按逗号分隔，存在eachRow中
-    double MaxRetentionTime=MIN;
+    double MaxRetentionTime=MIN_NUM;
     while(getline(_csvInput,_Oneline)){
         char* str=(char*)_Oneline.c_str();
         p=strtok(str,split);
@@ -199,7 +334,7 @@ void SparkCoeffs(string rawCoeffsFilePath,vector<struct item> DIA_RefSpectraCoef
             }
         }
     }
-    sort(eachRow.begin(),eachRow.end(),cmp);//对eachRow中的结构体按照cmp函数进行排序
+    sort(DIA_RefSpectraCoeffs.begin(),DIA_RefSpectraCoeffs.end(),cmp);//对eachRow中的结构体按照cmp函数进行排序
     if(MaxRetentionTime<600){
         for(int i=0;i<DIA_RefSpectraCoeffs.size();i++){
             DIA_RefSpectraCoeffs[i].RetentionTime*=60;
@@ -239,7 +374,8 @@ void FindPeaksInData(vector<struct peak> &PeptidePeaks,vector<struct item> Data,
             minScan=PeptideData[j].Scan;
         }
     }
-    /////PeptidePeaks=NULL这个也是必要的，因为不一定会进入下面的if分支，所以没进去的时候返回null
+    ////PeptidePeaks=NULL这个也是必要的，因为不一定会进入下面的if分支，所以没进去的时候返回null
+    ////所以一开始传进来的PeptidePeaks就是null
     vector<struct partOfHeader> DataOnuniformDrid;
     vector<int> floorPeptideDataPrecursorMZ;//floor(unique(PeptideData$PrecursorMZ))但此处记录的不是unique的
     for(int j=0;j<PeptideData.size();j++){
@@ -274,16 +410,25 @@ void FindPeaksInData(vector<struct peak> &PeptidePeaks,vector<struct item> Data,
             DataOnUniformGridCoeff.push_back(DataOnuniformDrid[j].Coeff);
         }
         //下面进行寻找序列峰的操作
-        //vector<struct peak> PeptidePeaks;
         findPeaks(DataOnUniformGridCoeff,PeptidePeaks,2,2,10);
         if(smooth=="rollmean"){
             /////有关kz函数的操作
+            vector<double> kzData(DataOnUniformGridCoeff);
+            kz(kzData,FilterWindow,KZiters);
+            for(int j=0;j<DataOnUniformGridCoeff.size();j++){
+                if(DataOnUniformGridCoeff[j]<1){
+                    kzData[j]=0;
+                }
+            }
+            PeptidePeaks.clear();
+            findPeaks(kzData,PeptidePeaks,2,2,10);
         }
     }
 }
 
-void QuantifyPeptides(vector<struct item> Data,vector<struct partOfItem> Identifiers,vector<struct headItem> header,int i,int IntensityCutoff=0,int QuantileCutoff=0,bool RTWindow=true,string smooth="rollmean",int FilterWindow=3,int KZiters=3){
+void QuantifyPeptides(vector<double> &result,vector<struct item> Data,vector<struct partOfItem> Identifiers,vector<struct headItem> header,int i,int IntensityCutoff=0,int QuantileCutoff=0,bool RTWindow=true,string smooth="rollmean",int FilterWindow=3,int KZiters=3){
     vector<struct partOfItem1> PeptideData;
+    vector<double> PeptideDataCoeff;
     for(int j=0;j<Data.size();j++){
         if(Data[j].Sequence==Identifiers[i].Sequence&&Data[j].Charge==Identifiers[i].Charge){
             struct partOfItem1 pp1;
@@ -305,6 +450,8 @@ void QuantifyPeptides(vector<struct item> Data,vector<struct partOfItem> Identif
         if(PeptideData[j].Coeff<1){
             PeptideData[j].Coeff=0;
         }
+        //在此处记录PeptideDataCoeff得vector
+        PeptideDataCoeff.push_back(PeptideData[j].Coeff);
         if(PeptideData[j].Coeff>1){
             count++;
         }
@@ -315,12 +462,12 @@ void QuantifyPeptides(vector<struct item> Data,vector<struct partOfItem> Identif
             minScan=PeptideData[j].Scan;
         }
     }
-
     vector<struct peak> RawPeaks,SmoothPeaks;
     FindPeaksInData(RawPeaks,Data,Identifiers,i,header,false,IntensityCutoff,QuantileCutoff,RTWindow,"none",FilterWindow);
     FindPeaksInData(SmoothPeaks,Data,Identifiers,i,header,false,IntensityCutoff,QuantileCutoff,RTWindow,smooth,FilterWindow,KZiters);
 
-    vector<double> result={0,1,0,0,0,0,1,0,0,0,0,0,0};
+    double area=0,BoxTestPval=1,BoxTestPvalOnGrid=1,MaxCoeff=0,PeakWidth=0,TimeAtTopOfPeak=0,snr=0,Variance=0,Skewness=0,Kurtosis=0,PeakStart=0,PeakEnd=0,Correlation=0;
+    result={area,BoxTestPval,snr,TimeAtTopOfPeak,MaxCoeff,PeakWidth,BoxTestPvalOnGrid,Variance,Skewness,Kurtosis,PeakStart,PeakEnd,Correlation};
     vector<struct partOfHeader> DataOnuniformGrid;
     vector<int> floorPeptideDataPrecursorMZ;//floor(unique(PeptideData$PrecursorMZ))但此处记录的不是unique的
     for(int j=0;j<PeptideData.size();j++){
@@ -362,24 +509,31 @@ void QuantifyPeptides(vector<struct item> Data,vector<struct partOfItem> Identif
             PeakDataOnUniformGridRetentionTime.push_back(DataOnuniformGrid[k].retentionTime);
             PeakDataOnUniformGridCoeff.push_back(DataOnuniformGrid[k].Coeff);
         }
-        double area=trapz(PeakDataOnUniformGridRetentionTime,PeakDataOnUniformGridCoeff);
-        double TimeAtTopOfPeak=DataOnuniformGrid[SmoothPeaks[0].top].retentionTime;
-        double MaxCoeff=DataOnuniformGrid[SmoothPeaks[0].top].Coeff;
-        //PeakCentralMoments = all.moments(scale(PeakDataOnUniformGrid$Coeff,center=FALSE),order.max = 4,central = TRUE)[3:5]
-        /*
-         BoxTest = Box.test(PeptideData$Coeff,type="Ljung-Box")
-         BoxTestPval = round(BoxTest$p.value,digits=5)
+        area=trapz(PeakDataOnUniformGridRetentionTime,PeakDataOnUniformGridCoeff);
+        TimeAtTopOfPeak=DataOnuniformGrid[SmoothPeaks[0].top].retentionTime;
+        MaxCoeff=DataOnuniformGrid[SmoothPeaks[0].top].Coeff;
 
-         BoxTestOnGrid = Box.test(DataOnUniformGrid$Coeff,type="Ljung-Box")
-         BoxTestPvalOnGrid = round(BoxTestOnGrid$p.value,digits=5)
-         */
-        double snr=area/sd(DataOnUniformGridCoeff);
-        double peakWidth=DataOnuniformGrid[end-1].retentionTime-DataOnuniformGrid[start-1].retentionTime;
-        double Correlation=0;
+        //PeakCentralMoments = all.moments(scale(PeakDataOnUniformGrid$Coeff,center=FALSE),order.max = 4,central = TRUE)[3:5]
+        vector<double> PeakCentralMoments={0,0,0};
+        allmomemt(PeakCentralMoments,PeakDataOnUniformGridCoeff);
+
+        string dirPath="/Users/patrickqi/Desktop/Figs_C++";//这个地方后续还需要更改，需要将dirPath作为参数传入
+        BoxTestPval=boxtest(PeptideDataCoeff,dirPath);
+        BoxTestPvalOnGrid=boxtest(DataOnUniformGridCoeff,dirPath);
+        snr=area/sd(DataOnUniformGridCoeff);
+        PeakWidth=DataOnuniformGrid[end-1].retentionTime-DataOnuniformGrid[start-1].retentionTime;
+        Variance=PeakCentralMoments[0];
+        Skewness=PeakCentralMoments[1];
+        Kurtosis=PeakCentralMoments[2];
+        PeakStart=DataOnuniformGrid[start-1].retentionTime;
+        PeakEnd=DataOnuniformGrid[end-1].retentionTime;
+        Correlation=0;
         for(int k=0;k<PeptideData.size();k++){
             Correlation+=PeptideData[k].Correlation;
         }
         Correlation/=PeptideData.size();
+        result.clear();
+        result={area,BoxTestPval,snr,TimeAtTopOfPeak,MaxCoeff,PeakWidth,BoxTestPvalOnGrid,Variance,Skewness,Kurtosis,PeakStart,PeakEnd,Correlation};
         ////result={上面计算的一堆}，返回result
         ////实现的时候将result当作参数，引用传入
     }
@@ -392,25 +546,28 @@ bool EnoughData(vector<struct item> Data,vector<struct partOfItem> Identifiers,i
             PeptideData.push_back(Data[j]);
         }
     }
-    /*if (RTWindow)
-        PeptideData = subset(PeptideData, abs(RetentionTime - RefRetentionTime) < 300)
-        */
+    if(RTWindow){
+
+    }
     if(PeptideData.size()>0)    return true;
     else    return false;
 }
 
-vector<int> f(int k,vector<bool> IsThereEnoughData2){
-    if(IsThereEnoughData2[k]){
-        ////////待填入
+void f(vector<double> &x,int k,bool IsThereEnoughData,vector<struct item> FIGSData,vector<struct partOfItem> IDs,vector<struct headItem>header){
+    if(IsThereEnoughData){
+        QuantifyPeptides(x,FIGSData,IDs,header,k);
     }
     else{
-        return {0,1,0,0,0,0,1,0,0,0,0,0,0};
+        x={0,1,0,0,0,0,1,0,0,0,0,0,0};
     }
 }
 
-vector<vector<int> > QuantifyAllFromCoeffs(vector<struct item> FIGSData,vector<bool>& IsThereEnoughData1){
+void QuantifyAllFromCoeffs(vector<struct Quants> &quants,vector<struct item> FIGSData,vector<struct headItem>header){
     vector<struct partOfItem> IDs;
-    vector<vector<int> > Quant;
+    bool IsThereEnoughData;
+    ////////这里有所改动，如有问题需要注意，这里后续还需要进行进一步的检查，避免别的地方需要使用在此处简化的部分
+    vector<vector<double> > Quant;
+    vector<double> temp;
     for(int i=0;i<FIGSData.size();i++){
         struct partOfItem pp;
         pp.Sequence=FIGSData[i].Sequence;
@@ -419,20 +576,232 @@ vector<vector<int> > QuantifyAllFromCoeffs(vector<struct item> FIGSData,vector<b
     }
     IDs.erase(unique(IDs.begin(),IDs.end()), IDs.end());//根据已经重载的==号，来将IDs中的相同结构体清除
     for(int i=0;i<IDs.size();i++){
-        IsThereEnoughData1.push_back(EnoughData(FIGSData,IDs,i,false));
-        Quant.push_back(f(i,IsThereEnoughData1));
+        IsThereEnoughData=EnoughData(FIGSData,IDs,i,false);
+        f(temp,i,IsThereEnoughData,FIGSData,IDs,header);//IsThereEnoughData和R中有所不同，这里不存所有的bool值进一个数组了，而是运用当前计算所得的bool值
+        //但是当前索引i还是要传进f函数的，因为f函数可能要调用Quantifypeptide函数，其中是需要索引的
+        Quant.push_back(temp);
     }
     //////待填入关于Quants的元素扩展操作
-    ////
+    //quants为需要返回的vector
+    struct Quants q1;
+    for(int i=0;i<IDs.size();i++){
+        q1.Sequence=IDs[i].Sequence;
+        q1.Charge=IDs[i].Charge;
+        q1.Quantity=Quant[i][0];
+        q1.LBPval=Quant[i][1];
+        q1.SNR=Quant[i][2];
+        q1.MaxCoeffTime=Quant[i][3];
+        q1.MaxCoeff=Quant[i][4];
+        q1.PeakWidth=Quant[i][5];
+        q1.LBPvalOnUniformGrid=Quant[i][6];
+        q1.PeakVariance=Quant[i][7];
+        q1.PeakSkewness=Quant[i][8];
+        q1.PeakKutosis=Quant[i][9];
+        q1.PeakStart=Quant[i][10];
+        q1.PeakEnd=Quant[i][11];
+        q1.Correlation=Quant[i][12];
+        quants.push_back(q1);
+    }
 }
 
 int main(int argc,char** argv){
-    vector<struct peak> p;
-    vector<struct item> d;
-    vector<struct partOfItem> I;
-    int i=1;
-    vector<headItem> header;
-    FindPeaksInData(p,d,I,i,header);
-    system("pause");
+    string dirPath;
+    cout<<"helloworld"<<endl;
+    if(argc==2){
+        dirPath=argv[1];//只有一个命令行参数，传的是目录路径
+    }
+    char* str=(char*)dirPath.c_str();
+    char* p=strtok(str,"/");
+    vector<string> partOfPath;
+    while(p!=NULL){
+        partOfPath.push_back(p);
+        p=strtok(NULL,"/");
+    }
+    string headerPath="";
+    if(!partOfPath.empty()){
+        headerPath+=partOfPath[0];
+    }
+    for(int i=1;i<partOfPath.size()-1;i++){
+        headerPath=headerPath+"/"+partOfPath[i];
+    }
+    headerPath=headerPath+"/header.csv";
+    string resultPath=dirPath+"/Coeffs.csv";
+    string decoyResultPath=dirPath+"DecoyCoeffs.csv";
+    string outputPath=dirPath+"/Quants.csv";
+
+    ifstream _csvinput(headerPath,ios::in);
+    if(!_csvInput){
+        cout<<"打开文件夹失败"<<endl;
+        exit(1);
+    }
+    string _Oneline;
+    vector<string> eachRow;
+    struct headItem h1;
+    while(getline(_csvinput,_Oneline)){
+        str=(char*)_Oneline.c_str();
+        p=strtok(str,",");
+        while(p!=NULL){
+            eachRow.push_back(p);
+            p=strtok(NULL,",");
+        }
+        h1.PrecursorMZ=stod(eachRow[0]);
+        h1.retentionTime=stod(eachRow[1])*60;
+        h1.seqNum=stoi(eachRow[2])+1;
+        h1.msLevel=2;
+        h.push_back(h1);
+    }
+
+    SparkCoeffs(resultPath,results);
+    SparkCoeffs(decoyResultPath,resultsWithDecoys);
+
+    QuantifyAllFromCoeffs(quants,results,h);
+    QuantifyAllFromCoeffs(quantsWithDecoys,resultsWithDecoys,h);
+    quantsWithDecoys.insert(quantsWithDecoys.end(),quants.begin(),quants.end());
+    string quantsWithDecoysSequence;
+    for(int i=0;i<quantsWithDecoys.size();i++){
+        quantsWithDecoysSequence=quantsWithDecoys[i].Sequence;
+        string::size_type position;
+        position=quantsWithDecoysSequence.find("DECOY");
+        if(position!=quantsWithDecoysSequence.npos){
+            //isTypeDecoy.push_back(true);
+            quantsWithDecoys[i].isTypeDecoy=true;
+        }
+        /*else{
+            //isTypeDecoy.push_back(false);
+        }*/
+    }
+    bool flag=false;
+    for(vector<struct Quants>::iterator it=quantsWithDecoys.begin();it!=quantsWithDecoys.end();){
+        struct Quants temp=*it;
+        if(temp.Quantity<=0){
+            it=quantsWithDecoys.erase(it);//删除该结构体，并将it指向已删除元素的下一个位置
+        }
+        else{
+            if(it->isTypeDecoy) flag=true;
+            ++it;
+        }
+    }
+    if(flag){
+        for(int i=0;i<quantsWithDecoys.size();i++){
+            irisdata[i][0]=quantsWithDecoys[i].PeakVariance;
+            irisdata[i][1]=quantsWithDecoys[i].PeakSkewness;
+            irisdata[i][2]=quantsWithDecoys[i].PeakKutosis;
+            irisdata[i][3]=quantsWithDecoys[i].Correlation;
+            if(quantsWithDecoys[i].isTypeDecoy){
+                Type.push_back(0);
+            }
+            else{
+                Type.push_back(1);
+            }
+        }
+        Mat mat=Mat(quantsWithDecoys.size(),4,CV_64FC1,irisdata);
+        LDA lda=LDA(mat,Type,1);
+        Mat eivector=lda.eigenvectors().clone();
+
+        //针对两类分类问题，计算两个数据集的中心
+        int classNum=2;
+        vector<Mat> classmean(classNum);
+        vector<int> setNum(classNum);
+
+        for(int i=0;i<classNum;i++)
+        {
+            classmean[i]=Mat::zeros(1,mat.cols,mat.type());  //初始化类中均值为0
+            setNum[i]=0;  //每一类中的条目数
+        }
+
+        Mat instance;
+        for(int i=0;i<mat.rows;i++)
+        {
+            instance=mat.row(i);//获取第i行
+            if(Type[i]==0)  //如果标签为0
+            {
+                add(classmean[0], instance, classmean[0]);  //矩阵相加
+                setNum[0]++;  //数量相加
+            }
+            else if(Type[i]==1)  //对于第1类的处理
+            {
+                add(classmean[1], instance, classmean[1]);
+                setNum[1]++;
+            }
+            else
+            {}
+        }
+        for(int i=0;i<classNum;i++)   //计算每一类的均值
+        {
+            classmean[i].convertTo(classmean[i],CV_64FC1,1.0/static_cast<double>(setNum[i]));
+        }
+        double total_means=(lda.project(classmean[0].at<double>(0)).at<double>(0)*setNum[0]+lda.project(classmean[1].at<double>(0)).at<double>(0)*setNum[1])/(setNum[0]+setNum[1]);
+        Mat matEivector=mat*eivector;
+        for(int i=0;i<quantsWithDecoys.size();i++){
+            struct resQuants rQ;
+            rQ.Sequence=quantsWithDecoys[i].Sequence;
+            rQ.Charge=quantsWithDecoys[i].Charge;
+            rQ.Quantity=quantsWithDecoys[i].Quantity;
+            rQ.PeakStart=quantsWithDecoys[i].PeakStart;
+            rQ.PeakEnd=quantsWithDecoys[i].PeakEnd;
+            rQ.score=matEivector.at<double>(i)-total_means;
+            rQ.isTypeDecoy=quantsWithDecoys[i].isTypeDecoy;
+            D.push_back(rQ);
+        }
+        double cutoff=1000;
+        for(int i=0;i<D.size();i++){
+            int fenzi,fenmu=0;
+            for(int j=0;j<D.size();j++){
+                if(D[j].score>D[i].score){
+                    fenmu++;
+                    if(D[j].isTypeDecoy){
+                        fenzi++;
+                    }
+                }
+            }
+            fdr.push_back(fenzi*1.0/fenmu);
+            if(fdr[i]<0.01){
+                if(D[i].score<cutoff){
+                    cutoff=D[i].score;
+                }
+            }
+        }
+
+        for(vector<struct resQuants>::iterator it=D.begin();it!=D.end();){
+            struct resQuants temp=*it;
+            if(temp.score<cutoff){
+                it=D.erase(it);
+            }
+            else{
+                ++it;
+            }
+        }
+        for(int i=0;i<D.size();i++){
+            pasteSequenceCharge.push_back(D[i].Sequence+to_string(D[i].Charge));
+        }
+        for(vector<struct Quants>::iterator it=quants.begin();it!=quants.end();){
+            struct Quants temp1=*it;
+            vector<string>::iterator ret;
+            ret=find(pasteSequenceCharge.begin(),pasteSequenceCharge.end(),it->Sequence+to_string(it->Charge));
+            if(ret==pasteSequenceCharge.end()){
+                it=quants.erase(it);
+            }
+            else{
+                quantsScore.push_back(D[ret-pasteSequenceCharge.begin()].score);
+                //////上面一句还有待检查
+                ++it;
+            }
+        }
+    }
+    else{
+        for(int i=0;i<quants.size();i++){
+            quantsScore.push_back(1);
+        }
+    }
+
+    ofstream outFile;
+    outFile.open(outputPath,ios::out);
+    outFile<<"Sequence"<<','<<"Charge"<<','<<"Quantity"<<','<<"Score"<<','<<"PeakStart"<<','<<"PeakEnd"<<endl;
+    for(int i=0;i<quants.size();i++){
+        outFile<<quants[i].Sequence<<','<<quants[i].Charge<<','<<quants[i].Quantity<<','<<quantsScore[i]<<','<<quants[i].PeakStart<<','<<quants[i].PeakEnd<<endl;
+    }
+    outFile.close();
+    //system("pause");
+    cout<<"hello world"<<endl;
     return 0;
 }
