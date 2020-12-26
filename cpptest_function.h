@@ -10,6 +10,7 @@
 #include<cstring>
 #include<cmath>
 #include<algorithm>
+#include<boost/math/distributions/chi_squared.hpp>
 using namespace std;
 #define MIN_NUM -1000000
 #ifndef CPPTEST_CPPTEST_FUNCTION_H
@@ -148,7 +149,7 @@ void kz(vector<double> &x,int m,int k){//x是待滤波的数组，m为核的大�
         }
     }
 }
-double boxtest(vector<double> x,string dirPath){
+/*double boxtest(vector<double> x,string dirPath){
     //写输入文件
     ofstream outFile;
     string inFilePath=dirPath+"/in.csv";
@@ -181,6 +182,22 @@ double boxtest(vector<double> x,string dirPath){
         remove(outFilePath.c_str());
     }
     return p;
+}*/
+double boxtest(vector<double> x){//默认滞后数lag=1
+    double xsum=accumulate(x.begin(),x.end(),0);
+    double xmeans=xsum/x.size();
+    double fenzi=0,fenmu=0;
+    for(int i=0;i<x.size();i++){
+        fenmu+=((x[i]-xmeans)*(x[i]-xmeans));
+    }
+    for(int i=0;i<x.size()-1;i++){
+        fenzi+=((x[i]-xmeans)*(x[i+1]-xmeans));
+    }
+    double p=fenzi/fenmu;
+    double Q=1.0*x.size()*(x.size()+2)*p*p/(x.size()-1);
+    //cout<<Q<<endl;
+    boost::math::chi_squared mydist(1);
+    return 1-boost::math::cdf(mydist,Q);
 }
 double trapz(vector<double> x,vector<double> y){//求积分，梯形法
     double res=0;
@@ -517,9 +534,9 @@ void QuantifyPeptides(vector<double> &result,vector<struct item> Data,vector<str
         Skewness=PeakCentralMoments[1];
         Kurtosis=PeakCentralMoments[2];
 
-        string dirPath="/Users/patrickqi/Desktop/Figs_cpp";//这个地方后续还需要更改，需要将dirPath作为参数传入
-        BoxTestPval=boxtest(PeptideDataCoeff,dirPath);
-        BoxTestPvalOnGrid=boxtest(DataOnUniformGridCoeff,dirPath);
+        //string dirPath="/Users/patrickqi/Desktop/Figs_cpp";//这个地方后续还需要更改，需要将dirPath作为参数传入
+        BoxTestPval=boxtest(PeptideDataCoeff);
+        BoxTestPvalOnGrid=boxtest(DataOnUniformGridCoeff);
         cout<<i<<endl;
         PeakWidth=DataOnuniformGrid[end-1].retentionTime-DataOnuniformGrid[start-1].retentionTime;
         PeakStart=DataOnuniformGrid[start-1].retentionTime;

@@ -97,14 +97,14 @@ int main(int argc,char** argv) {
             ++it;
         }
     }
-    ofstream outTestFile;
+    /*ofstream outTestFile;
     string qdFile="/Users/patrickqi/Desktop/qd.csv";
     outTestFile.open(qdFile,ios::out);
-    outTestFile<<"Sequence"<<','<<"Charge"<<','<<"PeakVariance"<<','<<"PeakSkewness"<<','<<"PeakKutosis"<<','<<"Correlation"<<endl;
+    outTestFile<<"Sequence"<<','<<"Charge"<<','<<"PeakVariance"<<','<<"PeakSkewness"<<','<<"PeakKutosis"<<','<<"Correlation"<<','<<"Type"<<endl;
     for(int i=0;i<quantsWithDecoys.size();i++){
-        outTestFile<<quantsWithDecoys[i].Sequence<<','<<quantsWithDecoys[i].Charge<<','<<quantsWithDecoys[i].PeakVariance<<','<<quantsWithDecoys[i].PeakSkewness<<','<<quantsWithDecoys[i].PeakKutosis<<','<<quantsWithDecoys[i].Correlation<<endl;
+        outTestFile<<quantsWithDecoys[i].Sequence<<','<<quantsWithDecoys[i].Charge<<','<<quantsWithDecoys[i].PeakVariance<<','<<quantsWithDecoys[i].PeakSkewness<<','<<quantsWithDecoys[i].PeakKutosis<<','<<quantsWithDecoys[i].Correlation<<','<<quantsWithDecoys[i].isTypeDecoy<<endl;
     }
-    outTestFile.close();
+    outTestFile.close();*/
     /*cout<<quantsWithDecoys.size()<<endl;
     for(int i=0;i<quantsWithDecoys.size();i++){
         cout<<quantsWithDecoys[i].Sequence<<" "<<quantsWithDecoys[i].Quantity<<endl;
@@ -126,7 +126,7 @@ int main(int argc,char** argv) {
 
         Mat mat=Mat(Type.size(),4,CV_64FC1,irisdata);
         LDA lda=LDA(mat,Type,1);
-        Mat eivector=lda.eigenvectors().clone();
+        Mat eivector=lda.eigenvectors();
         eivector=eivector*9.7237093;
         cout<<eivector<<endl;
 
